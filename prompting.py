@@ -33,7 +33,7 @@ class BasePrompter(Prompter):
 
         parts.append("")
         if self.cot:
-            parts.append("Answer: Let's think step by step.")
+            parts.append("Let's think step by step.")
         else:
             parts.append("Answer:")
 

@@ -2,16 +2,16 @@ import json
 import os
 import time
 import torch
-import anthropic
-import botocore
-import boto3
+# import anthropic
+# import botocore
+# import boto3
 from PIL import Image
 from dotenv import load_dotenv
 from fire import Fire
-from openai import OpenAI
+# from openai import OpenAI
 from pydantic import BaseModel
 from typing import Optional, List
-import google.generativeai as genai
+# import google.generativeai as genai
 from data_loading import convert_image_to_text, convert_image_to_bytes, load_image
 from transformers import (
     AutoProcessor,
@@ -20,7 +20,11 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
 )
+from vllm import LLM, SamplingParams
+import base64
+from io import BytesIO
 
+os.environ['VLLM_WORKER_MULTIPROC_METHOD'] = 'spawn'
 
 class EvalModel(BaseModel, arbitrary_types_allowed=True):
     model_path: str
@@ -45,394 +49,450 @@ class EvalModel(BaseModel, arbitrary_types_allowed=True):
         raise NotImplementedError
 
 
-class GeminiModel(EvalModel):
-    model_path: str = "gemini_info.json"
-    timeout: int = 60
-    model: Optional[genai.GenerativeModel]
+# class GeminiModel(EvalModel):
+#     model_path: str = "gemini_info.json"
+#     timeout: int = 60
+#     model: Optional[genai.GenerativeModel]
 
-    def load(self):
-        if self.model is None:
-            with open(self.model_path) as f:
-                info = json.load(f)
-                genai.configure(api_key=info["key"])
-                self.model = genai.GenerativeModel(info["engine"])
+#     def load(self):
+#         if self.model is None:
+#             with open(self.model_path) as f:
+#                 info = json.load(f)
+#                 genai.configure(api_key=info["key"])
+#                 self.model = genai.GenerativeModel(info["engine"])
 
-    def run(self, prompt: str, image: Image = None) -> str:
-        self.load()
-        output = ""
-        config = genai.types.GenerationConfig(
-            candidate_count=1,
-            temperature=self.temperature,
-        )
+#     def run(self, prompt: str, image: Image = None) -> str:
+#         self.load()
+#         output = ""
+#         config = genai.types.GenerationConfig(
+#             candidate_count=1,
+#             temperature=self.temperature,
+#         )
 
-        while not output:
-            try:
-                inputs = prompt if image is None else [prompt, self.resize_image(image)]
-                response = self.model.generate_content(inputs, generation_config=config)
-                if "block_reason" in str(vars(response)):
-                    output = str(vars(response))
-                elif not response.parts:
-                    output = "Empty response.parts from gemini"
-                else:
-                    output = response.text
-            except Exception as e:
-                print(e)
+#         while not output:
+#             try:
+#                 inputs = prompt if image is None else [prompt, self.resize_image(image)]
+#                 response = self.model.generate_content(inputs, generation_config=config)
+#                 if "block_reason" in str(vars(response)):
+#                     output = str(vars(response))
+#                 elif not response.parts:
+#                     output = "Empty response.parts from gemini"
+#                 else:
+#                     output = response.text
+#             except Exception as e:
+#                 print(e)
 
-            if not output:
-                print("Model request failed, retrying.")
-                time.sleep(1)
+#             if not output:
+#                 print("Model request failed, retrying.")
+#                 time.sleep(1)
 
-        return output
-
-
-class GeminiVisionModel(GeminiModel):
-    model_path = "gemini_vision_info.json"
+#         return output
 
 
-class GeminiProVisionModel(GeminiModel):
-    engine: str = "gemini-pro-vision"
-
-    def load(self):
-        if self.model is None:
-            load_dotenv()
-            genai.configure(api_key=os.environ["GEMINI_KEY"])
-            self.model = genai.GenerativeModel(self.engine)
+# class GeminiVisionModel(GeminiModel):
+#     model_path = "gemini_vision_info.json"
 
 
-class GeminiProVisionNewModel(GeminiModel):
-    engine: str = "gemini-1.5-pro"
+# class GeminiProVisionModel(GeminiModel):
+#     engine: str = "gemini-pro-vision"
 
-    def load(self):
-        if self.model is None:
-            load_dotenv()
-            genai.configure(api_key=os.environ["GEMINI_KEY"])
-            self.model = genai.GenerativeModel(self.engine)
-
-
-class OpenAIModel(EvalModel):
-    model_path: str = "openai_info.json"
-    timeout: int = 60
-    engine: str = ""
-    client: Optional[OpenAI]
-
-    def load(self):
-        with open(self.model_path) as f:
-            info = json.load(f)
-            self.engine = info["engine"]
-            self.client = OpenAI(api_key=info["key"], timeout=self.timeout)
-
-    def make_messages(self, prompt: str, image: Image = None) -> List[dict]:
-        inputs = [{"type": "text", "text": prompt}]
-        if image is not None:
-            image_text = convert_image_to_text(self.resize_image(image))
-            url = f"data:image/png;base64,{image_text}"
-            inputs.append({"type": "image_url", "image_url": {"url": url}})
-
-        return [{"role": "user", "content": inputs}]
-
-    def run(self, prompt: str, image: Image = None) -> str:
-        self.load()
-        output = ""
-        error_message = "The response was filtered"
-
-        while not output:
-            try:
-                response = self.client.chat.completions.create(
-                    model=self.engine,
-                    messages=self.make_messages(prompt, image),
-                    temperature=self.temperature,
-                    max_tokens=512,
-                )
-                if response.choices[0].finish_reason == "content_filter":
-                    raise ValueError(error_message)
-                output = response.choices[0].message.content
-
-            except Exception as e:
-                print(e)
-                if error_message in str(e):
-                    output = error_message
-
-            if not output:
-                print("OpenAIModel request failed, retrying.")
-
-        return output
-
-    def run_few_shot(self, prompts: List[str], images: List[Image.Image]) -> str:
-        self.load()
-        output = ""
-        error_message = "The response was filtered"
-        content = []
-        for i, p in enumerate(prompts):
-            for value in self.make_messages(p, images[i])[0]["content"]:
-                content.append(value)
-
-        while not output:
-            try:
-                response = self.client.chat.completions.create(
-                    model=self.engine,
-                    messages=[{"role": "user", "content": content}],
-                    temperature=self.temperature,
-                    max_tokens=512,
-                )
-                if response.choices[0].finish_reason == "content_filter":
-                    raise ValueError(error_message)
-                output = response.choices[0].message.content
-
-            except Exception as e:
-                print(e)
-                if error_message in str(e):
-                    output = error_message
-
-            if not output:
-                print("OpenAIModel request failed, retrying.")
-
-        return output
+#     def load(self):
+#         if self.model is None:
+#             load_dotenv()
+#             genai.configure(api_key=os.environ["GEMINI_KEY"])
+#             self.model = genai.GenerativeModel(self.engine)
 
 
-class OpenAIVisionModel(OpenAIModel):
-    model_path = "openai_vision_info.json"
+# class GeminiProVisionNewModel(GeminiModel):
+#     engine: str = "gemini-1.5-pro"
+
+#     def load(self):
+#         if self.model is None:
+#             load_dotenv()
+#             genai.configure(api_key=os.environ["GEMINI_KEY"])
+#             self.model = genai.GenerativeModel(self.engine)
 
 
-class GPT4VModel(OpenAIModel):
-    engine: str = "gpt-4-vision-preview"
+# class OpenAIModel(EvalModel):
+#     model_path: str = "openai_info.json"
+#     timeout: int = 60
+#     engine: str = ""
+#     client: Optional[OpenAI]
 
-    def load(self):
-        if self.client is None:
-            load_dotenv()
-            key = os.environ["OPENAI_KEY"]
-            self.client = OpenAI(api_key=key, timeout=self.timeout)
+#     def load(self):
+#         with open(self.model_path) as f:
+#             info = json.load(f)
+#             self.engine = info["engine"]
+#             self.client = OpenAI(api_key=info["key"], timeout=self.timeout)
 
+#     def make_messages(self, prompt: str, image: Image = None) -> List[dict]:
+#         inputs = [{"type": "text", "text": prompt}]
+#         if image is not None:
+#             image_text = convert_image_to_text(self.resize_image(image))
+#             url = f"data:image/png;base64,{image_text}"
+#             inputs.append({"type": "image_url", "image_url": {"url": url}})
 
-class GPT4oModel(OpenAIModel):
-    engine: str = "gpt-4o-2024-05-13"
+#         return [{"role": "user", "content": inputs}]
 
-    def load(self):
-        if self.client is None:
-            load_dotenv()
-            key = os.environ["OPENAI_KEY"]
-            self.client = OpenAI(api_key=key, timeout=self.timeout)
+#     def run(self, prompt: str, image: Image = None) -> str:
+#         self.load()
+#         output = ""
+#         error_message = "The response was filtered"
 
+#         while not output:
+#             try:
+#                 response = self.client.chat.completions.create(
+#                     model=self.engine,
+#                     messages=self.make_messages(prompt, image),
+#                     temperature=self.temperature,
+#                     max_tokens=512,
+#                 )
+#                 if response.choices[0].finish_reason == "content_filter":
+#                     raise ValueError(error_message)
+#                 output = response.choices[0].message.content
 
-class LlavaModel(EvalModel):
-    model_path = "llava-hf/llava-1.5-13b-hf"
-    template = "USER: <image>\n{prompt}\nASSISTANT:"
-    device: str = "cuda"
-    dtype: torch.dtype = torch.float16
-    model: Optional[LlavaForConditionalGeneration] = None
-    processor: Optional[LlavaProcessor] = None
+#             except Exception as e:
+#                 print(e)
+#                 if error_message in str(e):
+#                     output = error_message
 
-    def load(self):
-        if self.model is None:
-            self.model = LlavaForConditionalGeneration.from_pretrained(
-                self.model_path,
-                torch_dtype=self.dtype,
-            ).to(self.device)
-            self.processor = AutoProcessor.from_pretrained(self.model_path)
+#             if not output:
+#                 print("OpenAIModel request failed, retrying.")
 
-    def run(self, prompt: str, image: Image = None) -> str:
-        self.load()
-        prompt = self.template.format(prompt=prompt)
-        if image is not None:
-            image = self.resize_image(image)
+#         return output
 
-        # noinspection PyTypeChecker
-        inputs = self.processor(prompt, image, return_tensors="pt").to(
-            self.device, self.dtype
-        )
-        prompt_length = inputs["input_ids"].shape[1]
+#     def run_few_shot(self, prompts: List[str], images: List[Image.Image]) -> str:
+#         self.load()
+#         output = ""
+#         error_message = "The response was filtered"
+#         content = []
+#         for i, p in enumerate(prompts):
+#             for value in self.make_messages(p, images[i])[0]["content"]:
+#                 content.append(value)
 
-        outputs = self.model.generate(**inputs, max_new_tokens=512, do_sample=False)[0]
-        return self.processor.decode(outputs[prompt_length:], skip_special_tokens=True)
+#         while not output:
+#             try:
+#                 response = self.client.chat.completions.create(
+#                     model=self.engine,
+#                     messages=[{"role": "user", "content": content}],
+#                     temperature=self.temperature,
+#                     max_tokens=512,
+#                 )
+#                 if response.choices[0].finish_reason == "content_filter":
+#                     raise ValueError(error_message)
+#                 output = response.choices[0].message.content
 
+#             except Exception as e:
+#                 print(e)
+#                 if error_message in str(e):
+#                     output = error_message
 
-class ClaudeModel(EvalModel):
-    model_path: str = "claude_info.json"
-    timeout: int = 60
-    engine: str = ""
-    client: Optional[anthropic.Anthropic]
+#             if not output:
+#                 print("OpenAIModel request failed, retrying.")
 
-    def load(self):
-        with open(self.model_path) as f:
-            info = json.load(f)
-            self.engine = info["engine"]
-            self.client = anthropic.Anthropic(api_key=info["key"], timeout=self.timeout)
-
-    def make_messages(self, prompt: str, image: Image = None) -> List[dict]:
-        image_media_type = "image/png"
-        image_data = convert_image_to_text(self.resize_image(image))
-
-        inputs = [
-            {
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": image_media_type,
-                    "data": image_data,
-                },
-            },
-            {"type": "text", "text": prompt},
-        ]
-
-        return [{"role": "user", "content": inputs}]
-
-    def run(self, prompt: str, image: Image = None) -> str:
-        self.load()
-        output = ""
-        error_message = "The response was filtered"
-
-        while not output:
-            try:
-                response = self.client.messages.create(
-                    model=self.engine,
-                    messages=self.make_messages(prompt, image),
-                    temperature=self.temperature,
-                    max_tokens=512,
-                )
-
-                output = response.content[0].text
-
-            except Exception as e:
-                print(e)
-                if error_message in str(e):
-                    output = error_message
-
-            if not output:
-                print("ClaudeModel request failed, retrying.")
-
-        return output
+#         return output
 
 
-class ClaudeOpusModel(ClaudeModel):
-    engine: str = "claude-3-opus-20240229"
-
-    def load(self):
-        if self.client is None:
-            load_dotenv()
-            key = os.environ["CLAUDE_KEY"]
-            self.client = anthropic.Anthropic(api_key=key, timeout=self.timeout)
+# class OpenAIVisionModel(OpenAIModel):
+#     model_path = "openai_vision_info.json"
 
 
-class ClaudeSonnetNewModel(ClaudeModel):
-    engine: str = "claude-3-5-sonnet-20240620"
+# class GPT4VModel(OpenAIModel):
+#     engine: str = "gpt-4-vision-preview"
 
-    def load(self):
-        if self.client is None:
-            load_dotenv()
-            key = os.environ["CLAUDE_KEY"]
-            self.client = anthropic.Anthropic(api_key=key, timeout=self.timeout)
+#     def load(self):
+#         if self.client is None:
+#             load_dotenv()
+#             key = os.environ["OPENAI_KEY"]
+#             self.client = OpenAI(api_key=key, timeout=self.timeout)
+
+
+# class GPT4oModel(OpenAIModel):
+#     engine: str = "gpt-4o-2024-05-13"
+
+#     def load(self):
+#         if self.client is None:
+#             load_dotenv()
+#             key = os.environ["OPENAI_KEY"]
+#             self.client = OpenAI(api_key=key, timeout=self.timeout)
+
+
+# class LlavaModel(EvalModel):
+#     model_path = "llava-hf/llava-1.5-13b-hf"
+#     template = "USER: <image>\n{prompt}\nASSISTANT:"
+#     device: str = "cuda"
+#     dtype: torch.dtype = torch.float16
+#     model: Optional[LlavaForConditionalGeneration] = None
+#     processor: Optional[LlavaProcessor] = None
+
+#     def load(self):
+#         if self.model is None:
+#             self.model = LlavaForConditionalGeneration.from_pretrained(
+#                 self.model_path,
+#                 torch_dtype=self.dtype,
+#             ).to(self.device)
+#             self.processor = AutoProcessor.from_pretrained(self.model_path)
+
+#     def run(self, prompt: str, image: Image = None) -> str:
+#         self.load()
+#         prompt = self.template.format(prompt=prompt)
+#         if image is not None:
+#             image = self.resize_image(image)
+
+#         # noinspection PyTypeChecker
+#         inputs = self.processor(prompt, image, return_tensors="pt").to(
+#             self.device, self.dtype
+#         )
+#         prompt_length = inputs["input_ids"].shape[1]
+
+#         outputs = self.model.generate(**inputs, max_new_tokens=512, do_sample=False)[0]
+#         return self.processor.decode(outputs[prompt_length:], skip_special_tokens=True)
+
+
+# class ClaudeModel(EvalModel):
+#     model_path: str = "claude_info.json"
+#     timeout: int = 60
+#     engine: str = ""
+#     client: Optional[anthropic.Anthropic]
+
+#     def load(self):
+#         with open(self.model_path) as f:
+#             info = json.load(f)
+#             self.engine = info["engine"]
+#             self.client = anthropic.Anthropic(api_key=info["key"], timeout=self.timeout)
+
+#     def make_messages(self, prompt: str, image: Image = None) -> List[dict]:
+#         image_media_type = "image/png"
+#         image_data = convert_image_to_text(self.resize_image(image))
+
+#         inputs = [
+#             {
+#                 "type": "image",
+#                 "source": {
+#                     "type": "base64",
+#                     "media_type": image_media_type,
+#                     "data": image_data,
+#                 },
+#             },
+#             {"type": "text", "text": prompt},
+#         ]
+
+#         return [{"role": "user", "content": inputs}]
+
+#     def run(self, prompt: str, image: Image = None) -> str:
+#         self.load()
+#         output = ""
+#         error_message = "The response was filtered"
+
+#         while not output:
+#             try:
+#                 response = self.client.messages.create(
+#                     model=self.engine,
+#                     messages=self.make_messages(prompt, image),
+#                     temperature=self.temperature,
+#                     max_tokens=512,
+#                 )
+
+#                 output = response.content[0].text
+
+#             except Exception as e:
+#                 print(e)
+#                 if error_message in str(e):
+#                     output = error_message
+
+#             if not output:
+#                 print("ClaudeModel request failed, retrying.")
+
+#         return output
+
+
+# class ClaudeOpusModel(ClaudeModel):
+#     engine: str = "claude-3-opus-20240229"
+
+#     def load(self):
+#         if self.client is None:
+#             load_dotenv()
+#             key = os.environ["CLAUDE_KEY"]
+#             self.client = anthropic.Anthropic(api_key=key, timeout=self.timeout)
+
+
+# class ClaudeSonnetNewModel(ClaudeModel):
+#     engine: str = "claude-3-5-sonnet-20240620"
+
+#     def load(self):
+#         if self.client is None:
+#             load_dotenv()
+#             key = os.environ["CLAUDE_KEY"]
+#             self.client = anthropic.Anthropic(api_key=key, timeout=self.timeout)
 
 
 class QwenModel(EvalModel):
-    model_path = "Qwen/Qwen-VL-Chat"
-    template = "USER: <image>\n{prompt}\nASSISTANT:"
+    model_path: str = "Qwen/Qwen2.5-VL-7B-Instruct"
+    # template = "USER: <image>\n{prompt}\nASSISTANT:"
     device: str = "cuda"
     dtype: torch.dtype = torch.float16
-    model: Optional[AutoModelForCausalLM] = None
-    tokenizer: Optional[AutoTokenizer] = None
+    model: Optional[LLM] = None
+    processor: Optional[AutoProcessor] = None
 
     def load(self):
         if self.model is None:
-            self.model = (
-                AutoModelForCausalLM.from_pretrained(
-                    self.model_path,
-                    device_map="cuda",
-                    trust_remote_code=True,
-                    bf16=True,
-                )
-                .eval()
-                .to(self.device)
+            # Initialize VLLM model with appropriate configuration for 7B model
+            self.model = LLM(
+                model=self.model_path,
+                max_num_seqs=128,
+                limit_mm_per_prompt={"image": 24},
+                gpu_memory_utilization=0.80,
+                mm_processor_kwargs={
+                    "min_pixels": 256 * 28 * 28,
+                    "max_pixels": 1280 * 28 * 28,
+                },
             )
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                self.model_path, trust_remote_code=True
+            
+            # Initialize processor for chat template formatting
+            self.processor = AutoProcessor.from_pretrained(
+                self.model_path, 
+                min_pixels=256 * 28 * 28, 
+                max_pixels=1280 * 28 * 28
             )
 
     def run(self, prompt: str, image: str) -> str:
         self.load()
-        prompt = self.template.format(prompt=prompt)
-
-        query = self.tokenizer.from_list_format(
-            [
-                {"image": f"data/{image}"},
-                {"text": prompt},
-            ]
+        
+        # Load and convert image to PIL format
+        if isinstance(image, str):
+            # If image is a file path
+            if image.startswith('data/'):
+                image_path = image
+            else:
+                image_path = f"data/{image}"
+            
+            pil_image = Image.open(image_path)
+            pil_image.load()
+        else:
+            # Assume it's already a PIL image
+            pil_image = image
+        
+        # Format the prompt using the template
+        # formatted_prompt = self.template.format(prompt=prompt)
+        
+        # Create messages in the format expected by the processor
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": pil_image},
+                    {"type": "text", "text": prompt}
+                ]
+            }
+        ]
+        
+        # Apply chat template
+        text_prompt = self.processor.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True
         )
+        print(f"text_prompt sent for decoding: {text_prompt}")
+        # Set up sampling parameters for Qwen
+        sampling_params = SamplingParams(
+            temperature=0.01,
+            repetition_penalty=1.05,
+            max_tokens=8192,
+            top_p=0.8,
+            top_k=20,
+        )
+        
+        # Generate response using VLLM
+        outputs = self.model.generate(
+            {
+                "prompt": text_prompt,
+                "multi_modal_data": {"image": [pil_image]}
+            },
+            sampling_params
+        )
+        
+        # Extract the generated text
+        if outputs and len(outputs) > 0 and len(outputs[0].outputs) > 0:
+            response = outputs[0].outputs[0].text.strip()
+        else:
+            response = ""
 
-        response, _ = self.model.chat(self.tokenizer, query=query, history=None)
+        print(f"response returned from Qwen model: {response}")
         return response
 
 
-class BedrockModel(EvalModel):
-    model_path: str = "bedrock_info.json"
-    engine: str = ""
-    client: Optional[botocore.client.BaseClient]
+# class BedrockModel(EvalModel):
+#     model_path: str = "bedrock_info.json"
+#     engine: str = ""
+#     client: Optional[botocore.client.BaseClient]
 
-    def load(self):
-        with open(self.model_path) as f:
-            info = json.load(f)
-            self.engine = info["engine"]
-            self.client = boto3.client('bedrock-runtime')
+#     def load(self):
+#         with open(self.model_path) as f:
+#             info = json.load(f)
+#             self.engine = info["engine"]
+#             self.client = boto3.client('bedrock-runtime')
 
-    def make_messages(self, prompt: str, image: Image = None) -> List[dict]:
-        image_media_type = "png"
-        image_data = convert_image_to_bytes(self.resize_image(image))
+#     def make_messages(self, prompt: str, image: Image = None) -> List[dict]:
+#         image_media_type = "png"
+#         image_data = convert_image_to_bytes(self.resize_image(image))
 
-        inputs = [
-            {
-                "image": {
-                    "format": image_media_type,
-                    "source": {
-                        "bytes": image_data
-                    }
-                },
-            },
-            {
-                "text": prompt
-            },
-        ]
+#         inputs = [
+#             {
+#                 "image": {
+#                     "format": image_media_type,
+#                     "source": {
+#                         "bytes": image_data
+#                     }
+#                 },
+#             },
+#             {
+#                 "text": prompt
+#             },
+#         ]
 
-        return [{"role": "user", "content": inputs}]
+#         return [{"role": "user", "content": inputs}]
 
-    def run(self, prompt: str, image: Image = None) -> str:
-        self.load()
-        output = ""
-        error_message = "The response was filtered"
+#     def run(self, prompt: str, image: Image = None) -> str:
+#         self.load()
+#         output = ""
+#         error_message = "The response was filtered"
 
-        while not output:
-            try:
-                response = self.client.converse(
-                    modelId=self.engine,
-                    messages=self.make_messages(prompt, image),
-                    inferenceConfig={
-                        "temperature": self.temperature,
-                        "maxTokens": 512
-                    }
-                )
-                output = response['output']['message']['content'][0]['text']
-            except Exception as e:
-                print(e)
-                if error_message in str(e):
-                    output = error_message
+#         while not output:
+#             try:
+#                 response = self.client.converse(
+#                     modelId=self.engine,
+#                     messages=self.make_messages(prompt, image),
+#                     inferenceConfig={
+#                         "temperature": self.temperature,
+#                         "maxTokens": 512
+#                     }
+#                 )
+#                 output = response['output']['message']['content'][0]['text']
+#             except Exception as e:
+#                 print(e)
+#                 if error_message in str(e):
+#                     output = error_message
 
-            if not output:
-                print("BedrockModel request failed, retrying...")
+#             if not output:
+#                 print("BedrockModel request failed, retrying...")
 
-        return output
+#         return output
 
 
 def select_model(model_name: str, **kwargs) -> EvalModel:
     model_map = dict(
-        gemini_vision=GeminiVisionModel,
-        openai_vision=OpenAIVisionModel,
-        llava=LlavaModel,
-        claude=ClaudeModel,
+        # gemini_vision=GeminiVisionModel,
+        # openai_vision=OpenAIVisionModel,
+        # llava=LlavaModel,
+        # claude=ClaudeModel,
         qwen=QwenModel,
-        gpt4v=GPT4VModel,
-        gpt4o=GPT4oModel,
-        claude_3_opus=ClaudeOpusModel,
-        claude_35_sonnet=ClaudeSonnetNewModel,
-        gemini_1_pro=GeminiProVisionModel,
-        gemini_15_pro=GeminiProVisionNewModel,
-        bedrock=BedrockModel,
+        # gpt4v=GPT4VModel,
+        # gpt4o=GPT4oModel,
+        # claude_3_opus=ClaudeOpusModel,
+        # claude_35_sonnet=ClaudeSonnetNewModel,
+        # gemini_1_pro=GeminiProVisionModel,
+        # gemini_15_pro=GeminiProVisionNewModel,
+        # bedrock=BedrockModel,
     )
     model_class = model_map.get(model_name)
     if model_class is None:

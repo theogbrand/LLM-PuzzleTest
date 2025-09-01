@@ -42,7 +42,7 @@ class ChainThoughtMultiChoicePrompter(Prompter):
             f"(C) {sample.options[2]}",
             f"(D) {sample.options[3]}" if len(sample.options) == 4 else "",
             "",
-            f"Answer: Let's describe the image first and think step by step.",
+            f"Let's describe the image first and think step by step.",
         ]
 
         if set(sample.options) == size_options:

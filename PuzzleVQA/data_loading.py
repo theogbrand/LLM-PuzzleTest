@@ -12,7 +12,7 @@ import requests
 from PIL import Image
 from datasets import load_dataset
 from fire import Fire
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from tqdm import tqdm
 
 Point = Tuple[float, float]
@@ -67,7 +67,7 @@ class Data(BaseModel):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w") as f:
             for s in self.samples:
-                print(s.json(), file=f)
+                print(s.model_dump_json(), file=f)
 
     @classmethod
     def load(cls, path: str):
@@ -91,12 +91,12 @@ class Data(BaseModel):
         for s in random.sample(self.samples, k=4):
             s = s.copy(deep=True)
             s.image_string = s.image_string[:80] + "..."
-            print(s.json(indent=2))
+            print(s.model_dump_json(indent=2))
         for s in self.samples:
             assert "..." not in s.image_string and len(s.image_string) > 100
         info = dict(
             samples=len(self.samples),
-            unique_samples=len(set(s.json() for s in self.samples)),
+            unique_samples=len(set(s.model_dump_json() for s in self.samples)),
         )
         print(json.dumps(info, indent=2))
 

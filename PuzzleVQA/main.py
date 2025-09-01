@@ -38,6 +38,8 @@ def evaluate_multi_choice(
     print(dict(path_out=path_out))
 
     is_correct = []
+    # Limit to first 50 samples
+    data.samples = data.samples[:50]
     progress = tqdm(data.samples, desc=path_out)
     sample: Sample
     prompter = select_prompter(prompt_name)
@@ -71,7 +73,7 @@ def evaluate_multi_choice(
         is_correct.append(scorer.run(sample))
         score = sum(is_correct) / len(is_correct)
         progress.set_postfix(score=score)
-        print(sample.json(indent=2, exclude={"image_string"}))
+        print(sample.model_dump_json(indent=2, exclude={"image_string"}))
         print(dict(is_correct=is_correct[-1]))
         data.save(path_out)
 
