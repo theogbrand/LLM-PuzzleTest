@@ -58,6 +58,18 @@ class Sample(BaseModel):
     prompt: str = ""
     raw_output: str = ""
     pred: str = ""
+    
+    @field_validator('options', mode='before')
+    @classmethod
+    def convert_options_to_str(cls, v):
+        if isinstance(v, list):
+            return [str(item) for item in v]
+        return v
+    
+    @field_validator('answer', mode='before')
+    @classmethod
+    def convert_answer_to_str(cls, v):
+        return str(v)
 
 
 class Data(BaseModel):
