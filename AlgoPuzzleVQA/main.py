@@ -99,10 +99,79 @@ def evaluate_multi_choice(
         data.save(path_out)
 
 
+def print_results(*paths: str):
+    scorer = ExactScorer()
+    mapping = dict(
+        # Spatial reasoning
+        board_tile="spatial",
+        checker_move="spatial", 
+        maze="spatial",
+        move_box="spatial",
+        number_slide="spatial",
+        wood_slide="spatial",
+        
+        # Classic algorithms
+        n_queens="classic",
+        tower_of_hanoi="classic",
+        rubiks_cube="classic",
+        
+        # Temporal reasoning
+        calendar="temporal",
+        clock="temporal",
+        wheel_of_fortune="temporal",
+        
+        # Graph/Network
+        chain_link="graph",
+        map="graph",
+        think_dot="graph",
+        
+        # Resource management
+        water_jugs="resource",
+        rotting_kiwi="resource",
+        
+        # Visual
+        colour_hue="visual",
+    )
+
+    records = {}
+    for p in paths:
+        task, model, prompt = Path(p).parts[-3:]
+        data = Data.load(str(p))
+        score = sum(scorer.run(s) for s in data.samples) / len(data.samples) * 100
+        if any(s.pred == "" for s in data.samples):
+            score = -1
+
+        base = 25 if len(data.samples[0].options) == 4 else 100 / 3
+        records.setdefault(task, {}).update(
+            category=mapping[task], task=task, random_baseline=base
+        )
+        records[task][model] = score
+
+    print("Individual task results")
+    df = pd.DataFrame(list(records.values()))
+    df["length"] = df["category"].str.len()
+    df = df.sort_values(by=["length"]).drop(columns=["length"]).reset_index(drop=True)
+    avg_row = df.mean(numeric_only=True)
+    avg_row["category"] = "~avg."
+    avg_row["task"] = "~avg."
+    df.loc[len(df)] = avg_row
+    print(df.round(1))
+
+    print("Category results")
+    df_category = df.dropna()
+    average_row = df_category.mean(numeric_only=True)
+    average_row["category"] = "~avg."
+    df_category.loc[len(df_category)] = average_row
+    df_category = df_category.groupby("category").mean(numeric_only=True)
+    print(df_category.round(1))
+
+
 """
 p main.py evaluate_multi_choice data/wheel_of_fortune.json --model_name gemini_vision
 p main.py evaluate_multi_choice data/wheel_of_fortune.json --model_name openai_vision
 p main.py evaluate_multi_choice data/wheel_of_fortune.json --model_name claude
+
+python main.py print_results outputs/*/*/*.jsonl
 """
 
 
