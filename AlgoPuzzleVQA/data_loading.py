@@ -1,14 +1,18 @@
 import base64
+import hashlib
 import io
 import json
 import random
 from pathlib import Path
+from shutil import copyfile, rmtree
 from typing import List, Tuple
 
+import pandas as pd
 import requests
 from PIL import Image
+from datasets import load_dataset
 from fire import Fire
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from tqdm import tqdm
 
 Point = Tuple[float, float]
@@ -24,7 +28,7 @@ def convert_image_to_text(image: Image) -> str:
 
 def convert_image_to_bytes(image: Image) -> bytes:
     with io.BytesIO() as output:
-        image.save(output, format="PNG")
+        image.save(output, format=image.format)
         data = output.getvalue()
     return data
 
@@ -42,26 +46,28 @@ def load_image(path: str) -> Image:
     return Image.open(io.BytesIO(response.content))
 
 
-def sample_options(answer: str, options: List[str], k: int):
-    # Ensure random order and no duplicates
-    options = [o for o in options if o != answer]
-    assert len(options) + 1 >= k
-    options = random.sample(options, k=k - 1)
-    options.append(answer)
-    assert len(set(options)) == k
-    return random.sample(options, k=k)
-
-
 class Sample(BaseModel):
     question: str
     answer: str
     options: List[str] = []
-    image: str = ""
+    image: str
     image_string: str = ""
     image_caption: str = ""
     prompt: str = ""
     raw_output: str = ""
     pred: str = ""
+    
+    @field_validator('options', mode='before')
+    @classmethod
+    def convert_options_to_str(cls, v):
+        if isinstance(v, list):
+            return [str(item) for item in v]
+        return v
+    
+    @field_validator('answer', mode='before')
+    @classmethod
+    def convert_answer_to_str(cls, v):
+        return str(v)
 
 
 class Data(BaseModel):
@@ -71,7 +77,7 @@ class Data(BaseModel):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w") as f:
             for s in self.samples:
-                print(s.json(), file=f)
+                print(s.model_dump_json(), file=f)
 
     @classmethod
     def load(cls, path: str):
@@ -95,12 +101,12 @@ class Data(BaseModel):
         for s in random.sample(self.samples, k=4):
             s = s.copy(deep=True)
             s.image_string = s.image_string[:80] + "..."
-            print(s.json(indent=2))
+            print(s.model_dump_json(indent=2))
         for s in self.samples:
             assert "..." not in s.image_string and len(s.image_string) > 100
         info = dict(
             samples=len(self.samples),
-            unique_samples=len(set(s.json() for s in self.samples)),
+            unique_samples=len(set(s.model_dump_json() for s in self.samples)),
         )
         print(json.dumps(info, indent=2))
 

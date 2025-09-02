@@ -1,4 +1,5 @@
 import json
+import os
 import time
 import torch
 # import anthropic
@@ -15,10 +16,11 @@ from transformers import (
     AutoProcessor,
     LlavaForConditionalGeneration,
     LlavaProcessor,
-    Qwen2VLForConditionalGeneration,
 )
+from vllm import LLM, SamplingParams
 # from openai import AzureOpenAI
 
+os.environ['VLLM_WORKER_MULTIPROC_METHOD'] = 'spawn'
 
 class EvalModel(BaseModel, arbitrary_types_allowed=True):
     model_path: str
@@ -475,52 +477,90 @@ class EvalModel(BaseModel, arbitrary_types_allowed=True):
 #         return output
 
 
-class Qwen2VLModel(EvalModel):
-    model_path = "Qwen/Qwen2-VL-7B-Instruct"
+class Qwen25VLModel(EvalModel):
+    model_path: str = "Qwen/Qwen2.5-VL-7B-Instruct"
+    # template = "USER: <image>\n{prompt}\nASSISTANT:"
     device: str = "cuda"
     dtype: torch.dtype = torch.float16
-    model: Optional[Qwen2VLForConditionalGeneration] = None
+    model: Optional[LLM] = None
     processor: Optional[AutoProcessor] = None
 
     def load(self):
         if self.model is None:
-            self.model = Qwen2VLForConditionalGeneration.from_pretrained(
-                self.model_path,
-                torch_dtype=self.dtype,
-            ).to(self.device)
-            self.processor = AutoProcessor.from_pretrained(self.model_path)
+            # Initialize VLLM model with appropriate configuration for 7B model
+            self.model = LLM(
+                model=self.model_path,
+                max_num_seqs=128,
+                limit_mm_per_prompt={"image": 24},
+                gpu_memory_utilization=0.80,
+                mm_processor_kwargs={
+                    "min_pixels": 256 * 28 * 28,
+                    "max_pixels": 1280 * 28 * 28,
+                },
+            )
+            
+            # Initialize processor for chat template formatting
+            self.processor = AutoProcessor.from_pretrained(
+                self.model_path, 
+                min_pixels=256 * 28 * 28, 
+                max_pixels=1280 * 28 * 28
+            )
 
-    def run(self, prompt: str, image: Image = None) -> str:
+    def run(self, prompt: str, image: str) -> str:
         self.load()
-
-        conversation = [
+        
+        # Load and convert image to PIL format
+        if isinstance(image, str):
+            # If image is a file path
+            if image.startswith('data/'):
+                image_path = image
+            else:
+                image_path = f"data/{image}"
+            
+            pil_image = Image.open(image_path)
+            pil_image.load()
+        else:
+            # Assume it's already a PIL image
+            pil_image = image
+        
+        # Format the prompt using the template
+        # formatted_prompt = self.template.format(prompt=prompt)
+        
+        # Create messages in the format expected by the processor
+        messages = [
             {
                 "role": "user",
                 "content": [
-                    {
-                        "type": "image",
-                    },
-                    {"type": "text", "text": prompt},
-                ],
+                    {"type": "image", "image": pil_image},
+                    {"type": "text", "text": prompt}
+                ]
             }
         ]
-
-        # Preprocess the inputs
-        prompt = self.processor.apply_chat_template(
-            conversation, add_generation_prompt=True
+        
+        # Apply chat template
+        text_prompt = self.processor.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True
         )
-
-        if image is not None:
-            image = self.resize_image(image)
-
-        # noinspection PyTypeChecker
-        inputs = self.processor(
-            text=[prompt], images=[image], padding=True, return_tensors="pt"
-        ).to(self.device, self.dtype)
-        prompt_length = inputs["input_ids"].shape[1]
-
-        outputs = self.model.generate(**inputs, max_new_tokens=512, do_sample=False)[0]
-        return self.processor.decode(outputs[prompt_length:], skip_special_tokens=True)
+        print(f"text_prompt sent for decoding: {text_prompt}")
+        # Set up sampling parameters for Qwen
+        sampling_params = SamplingParams(
+            temperature=0.01,
+            max_tokens=512,
+        )
+        
+        # Generate response using VLLM
+        outputs = self.model.generate(
+            [{
+                "prompt": text_prompt,
+                "multi_modal_data": {"image": pil_image}
+            }],
+            sampling_params=sampling_params
+        )
+        
+        # Extract the generated text
+        return outputs[0].outputs[0].text
 
 
 def select_model(model_name: str, **kwargs) -> EvalModel:
@@ -532,7 +572,7 @@ def select_model(model_name: str, **kwargs) -> EvalModel:
         # bedrock=BedrockModel,
         # gpt4v=GPT4vModel,
         # gpt4o=GPT4oModel,
-        qwen2vl=Qwen2VLModel,
+        qwen=Qwen25VLModel,
     )
     model_class = model_map.get(model_name)
     if model_class is None:
