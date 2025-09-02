@@ -38,6 +38,8 @@ def evaluate_multi_choice(
     print(dict(path_out=path_out))
 
     is_correct = []
+    # Limit to first 50 samples
+    data.samples = data.samples[:50]
     progress = tqdm(data.samples, desc=path_out)
     sample: Sample
     prompter = select_prompter(prompt_name)
