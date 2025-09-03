@@ -6,6 +6,7 @@ import torch
 # import botocore
 # import boto3
 from PIL import Image
+from dotenv import load_dotenv
 from fire import Fire
 # from openai import OpenAI
 from pydantic import BaseModel
@@ -16,9 +17,12 @@ from transformers import (
     AutoProcessor,
     LlavaForConditionalGeneration,
     LlavaProcessor,
+    AutoModelForCausalLM,
+    AutoTokenizer,
 )
 from vllm import LLM, SamplingParams
-# from openai import AzureOpenAI
+import base64
+from io import BytesIO
 
 os.environ['VLLM_WORKER_MULTIPROC_METHOD'] = 'spawn'
 
@@ -35,10 +39,12 @@ class EvalModel(BaseModel, arbitrary_types_allowed=True):
         factor = self.max_image_size / max(h, w)
         h = round(h * factor)
         w = round(w * factor)
+        # print("resizing image")
+        # print(dict(old=image.size, resized=(h, w)))
         if image.mode == "RGBA":
-            image = image.convert("RGB")
-        image = image.resize((h, w), Image.LANCZOS)
-        return image
+            resized_image = image.convert("RGB")
+        resized_image = image.resize((h, w), Image.LANCZOS)
+        return resized_image
 
     def run(self, prompt: str, image: Image = None) -> str:
         raise NotImplementedError
@@ -88,6 +94,26 @@ class EvalModel(BaseModel, arbitrary_types_allowed=True):
 #     model_path = "gemini_vision_info.json"
 
 
+# class GeminiProVisionModel(GeminiModel):
+#     engine: str = "gemini-pro-vision"
+
+#     def load(self):
+#         if self.model is None:
+#             load_dotenv()
+#             genai.configure(api_key=os.environ["GEMINI_KEY"])
+#             self.model = genai.GenerativeModel(self.engine)
+
+
+# class GeminiProVisionNewModel(GeminiModel):
+#     engine: str = "gemini-1.5-pro"
+
+#     def load(self):
+#         if self.model is None:
+#             load_dotenv()
+#             genai.configure(api_key=os.environ["GEMINI_KEY"])
+#             self.model = genai.GenerativeModel(self.engine)
+
+
 # class OpenAIModel(EvalModel):
 #     model_path: str = "openai_info.json"
 #     timeout: int = 60
@@ -102,9 +128,9 @@ class EvalModel(BaseModel, arbitrary_types_allowed=True):
 
 #     def make_messages(self, prompt: str, image: Image = None) -> List[dict]:
 #         inputs = [{"type": "text", "text": prompt}]
-#         if image is not None and "vision" in self.engine:
+#         if image is not None:
 #             image_text = convert_image_to_text(self.resize_image(image))
-#             url = f"data:image/jpeg;base64,{image_text}"
+#             url = f"data:image/png;base64,{image_text}"
 #             inputs.append({"type": "image_url", "image_url": {"url": url}})
 
 #         return [{"role": "user", "content": inputs}]
@@ -172,6 +198,26 @@ class EvalModel(BaseModel, arbitrary_types_allowed=True):
 #     model_path = "openai_vision_info.json"
 
 
+# class GPT4VModel(OpenAIModel):
+#     engine: str = "gpt-4-vision-preview"
+
+#     def load(self):
+#         if self.client is None:
+#             load_dotenv()
+#             key = os.environ["OPENAI_KEY"]
+#             self.client = OpenAI(api_key=key, timeout=self.timeout)
+
+
+# class GPT4oModel(OpenAIModel):
+#     engine: str = "gpt-4o-2024-05-13"
+
+#     def load(self):
+#         if self.client is None:
+#             load_dotenv()
+#             key = os.environ["OPENAI_KEY"]
+#             self.client = OpenAI(api_key=key, timeout=self.timeout)
+
+
 # class LlavaModel(EvalModel):
 #     model_path = "llava-hf/llava-1.5-13b-hf"
 #     template = "USER: <image>\n{prompt}\nASSISTANT:"
@@ -208,7 +254,7 @@ class EvalModel(BaseModel, arbitrary_types_allowed=True):
 #     model_path: str = "claude_info.json"
 #     timeout: int = 60
 #     engine: str = ""
-#     client: Optional[OpenAI]
+#     client: Optional[anthropic.Anthropic]
 
 #     def load(self):
 #         with open(self.model_path) as f:
@@ -261,224 +307,29 @@ class EvalModel(BaseModel, arbitrary_types_allowed=True):
 #         return output
 
 
-# class BedrockModel(EvalModel):
-#     model_path: str = "bedrock_info.json"
-#     engine: str = ""
-#     client: Optional[botocore.client.BaseClient]
+# class ClaudeOpusModel(ClaudeModel):
+#     engine: str = "claude-3-opus-20240229"
 
 #     def load(self):
-#         with open(self.model_path) as f:
-#             info = json.load(f)
-#             self.engine = info["engine"]
-#             self.client = boto3.client("bedrock-runtime")
-
-#     def make_messages(self, prompt: str, image: Image = None) -> List[dict]:
-#         image_media_type = "png"
-#         image_data = convert_image_to_bytes(self.resize_image(image))
-
-#         inputs = [
-#             {
-#                 "image": {"format": image_media_type, "source": {"bytes": image_data}},
-#             },
-#             {"text": prompt},
-#         ]
-
-#         return [{"role": "user", "content": inputs}]
-
-#     def run(self, prompt: str, image: Image = None) -> str:
-#         self.load()
-#         output = ""
-#         error_message = "The response was filtered"
-
-#         while not output:
-#             try:
-#                 response = self.client.converse(
-#                     modelId=self.engine,
-#                     messages=self.make_messages(prompt, image),
-#                     inferenceConfig={"temperature": self.temperature, "maxTokens": 512},
-#                 )
-#                 output = response["output"]["message"]["content"][0]["text"]
-#             except Exception as e:
-#                 raise e
-#                 if error_message in str(e):
-#                     output = error_message
-
-#             if not output:
-#                 print("BedrockModel request failed, retrying...")
-
-#         return output
+#         if self.client is None:
+#             load_dotenv()
+#             key = os.environ["CLAUDE_KEY"]
+#             self.client = anthropic.Anthropic(api_key=key, timeout=self.timeout)
 
 
-# class GPT4vModel(EvalModel):
-#     model_path: str = "gpt4v.json"
-#     timeout: int = 60
-#     engine: str = ""
-#     client: Optional[OpenAI]
+# class ClaudeSonnetNewModel(ClaudeModel):
+#     engine: str = "claude-3-5-sonnet-20240620"
 
 #     def load(self):
-#         with open(self.model_path) as f:
-#             info = json.load(f)
-#             self.engine = info["engine"]
-#             self.client = AzureOpenAI(
-#                 azure_endpoint=info["endpoint"],
-#                 api_key=info["key"],
-#                 api_version="2024-02-15-preview",
-#             )
-
-#     def make_messages(self, prompt: str, image: Image = None) -> List[dict]:
-#         inputs = [{"type": "text", "text": prompt}]
-#         if image is not None and "vision" in self.engine:
-#             image_text = convert_image_to_text(self.resize_image(image))
-#             url = f"data:image/jpeg;base64,{image_text}"
-#             inputs.append({"type": "image_url", "image_url": {"url": url}})
-
-#         return [{"role": "user", "content": inputs}]
-
-#     def run(self, prompt: str, image: Image = None) -> str:
-#         self.load()
-#         output = ""
-#         error_message = "The response was filtered"
-
-#         while not output:
-#             try:
-#                 response = self.client.chat.completions.create(
-#                     model=self.engine,
-#                     messages=self.make_messages(prompt, image),
-#                     temperature=self.temperature,
-#                     max_tokens=512,
-#                 )
-#                 if response.choices[0].finish_reason == "content_filter":
-#                     raise ValueError(error_message)
-#                 output = response.choices[0].message.content
-
-#             except Exception as e:
-#                 print(e)
-#                 if error_message in str(e):
-#                     output = error_message
-
-#             if not output:
-#                 print("OpenAIModel request failed, retrying.")
-
-#         return output
-
-#     def run_few_shot(self, prompts: List[str], images: List[Image.Image]) -> str:
-#         self.load()
-#         output = ""
-#         error_message = "The response was filtered"
-#         content = []
-#         for i, p in enumerate(prompts):
-#             for value in self.make_messages(p, images[i])[0]["content"]:
-#                 content.append(value)
-
-#         while not output:
-#             try:
-#                 response = self.client.chat.completions.create(
-#                     model=self.engine,
-#                     messages=[{"role": "user", "content": content}],
-#                     temperature=self.temperature,
-#                     max_tokens=512,
-#                 )
-#                 if response.choices[0].finish_reason == "content_filter":
-#                     raise ValueError(error_message)
-#                 output = response.choices[0].message.content
-
-#             except Exception as e:
-#                 print(e)
-#                 if error_message in str(e):
-#                     output = error_message
-
-#             if not output:
-#                 print("OpenAIModel request failed, retrying.")
-
-#         return output
-
-
-# class GPT4oModel(EvalModel):
-#     model_path: str = "gpt4o.json"
-#     timeout: int = 60
-#     engine: str = ""
-#     client: Optional[OpenAI]
-
-#     def load(self):
-#         with open(self.model_path) as f:
-#             info = json.load(f)
-#             self.engine = info["engine"]
-#             self.client = AzureOpenAI(
-#                 azure_endpoint=info["endpoint"],
-#                 api_key=info["key"],
-#                 api_version="2024-02-15-preview",
-#             )
-
-#     def make_messages(self, prompt: str, image: Image = None) -> List[dict]:
-#         inputs = [{"type": "text", "text": prompt}]
-#         if image is not None and "vision" in self.engine:
-#             image_text = convert_image_to_text(self.resize_image(image))
-#             url = f"data:image/jpeg;base64,{image_text}"
-#             inputs.append({"type": "image_url", "image_url": {"url": url}})
-
-#         return [{"role": "user", "content": inputs}]
-
-#     def run(self, prompt: str, image: Image = None) -> str:
-#         self.load()
-#         output = ""
-#         error_message = "The response was filtered"
-
-#         while not output:
-#             try:
-#                 response = self.client.chat.completions.create(
-#                     model=self.engine,
-#                     messages=self.make_messages(prompt, image),
-#                     temperature=self.temperature,
-#                     max_tokens=512,
-#                 )
-#                 if response.choices[0].finish_reason == "content_filter":
-#                     raise ValueError(error_message)
-#                 output = response.choices[0].message.content
-
-#             except Exception as e:
-#                 print(e)
-#                 if error_message in str(e):
-#                     output = error_message
-
-#             if not output:
-#                 print("OpenAIModel request failed, retrying.")
-
-#         return output
-
-#     def run_few_shot(self, prompts: List[str], images: List[Image.Image]) -> str:
-#         self.load()
-#         output = ""
-#         error_message = "The response was filtered"
-#         content = []
-#         for i, p in enumerate(prompts):
-#             for value in self.make_messages(p, images[i])[0]["content"]:
-#                 content.append(value)
-
-#         while not output:
-#             try:
-#                 response = self.client.chat.completions.create(
-#                     model=self.engine,
-#                     messages=[{"role": "user", "content": content}],
-#                     temperature=self.temperature,
-#                     max_tokens=512,
-#                 )
-#                 if response.choices[0].finish_reason == "content_filter":
-#                     raise ValueError(error_message)
-#                 output = response.choices[0].message.content
-
-#             except Exception as e:
-#                 print(e)
-#                 if error_message in str(e):
-#                     output = error_message
-
-#             if not output:
-#                 print("OpenAIModel request failed, retrying.")
-
-#         return output
+#         if self.client is None:
+#             load_dotenv()
+#             key = os.environ["CLAUDE_KEY"]
+#             self.client = anthropic.Anthropic(api_key=key, timeout=self.timeout)
 
 
 class Qwen25VLModel(EvalModel):
-    model_path: str = "Qwen/Qwen2.5-VL-7B-Instruct"
+    # model_path: str = "Qwen/Qwen2.5-VL-7B-Instruct"
+    model_path: str = "google/gemma-3-12b-it"
     # template = "USER: <image>\n{prompt}\nASSISTANT:"
     device: str = "cuda"
     dtype: torch.dtype = torch.float16
@@ -488,23 +339,30 @@ class Qwen25VLModel(EvalModel):
     def load(self):
         if self.model is None:
             # Initialize VLLM model with appropriate configuration for 7B model
-            self.model = LLM(
-                model=self.model_path,
-                max_num_seqs=128,
-                limit_mm_per_prompt={"image": 24},
-                gpu_memory_utilization=0.80,
-                mm_processor_kwargs={
-                    "min_pixels": 256 * 28 * 28,
-                    "max_pixels": 1280 * 28 * 28,
-                },
-            )
-            
-            # Initialize processor for chat template formatting
-            self.processor = AutoProcessor.from_pretrained(
-                self.model_path, 
-                min_pixels=256 * 28 * 28, 
-                max_pixels=1280 * 28 * 28
-            )
+            if "qwen" in self.model_path.lower():
+                self.model = LLM(
+                    model=self.model_path,
+                    max_num_seqs=128,
+                    limit_mm_per_prompt={"image": 24},
+                    gpu_memory_utilization=0.80,
+                    mm_processor_kwargs={
+                        "min_pixels": 256 * 28 * 28,
+                        "max_pixels": 1280 * 28 * 28,
+                    },
+                )
+                # Initialize processor for chat template formatting
+                self.processor = AutoProcessor.from_pretrained(
+                    self.model_path, min_pixels=256 * 28 * 28, max_pixels=1280 * 28 * 28
+                )
+            elif "gemma-3-12b-it" in self.model_path.lower():
+                self.model = LLM(
+                    model=self.model_path,
+                    max_num_seqs=64,
+                    gpu_memory_utilization=0.75,
+                    limit_mm_per_prompt={"image": 24},
+                )
+                # Initialize processor for chat template formatting
+                self.processor = AutoProcessor.from_pretrained(self.model_path)
 
     def run(self, prompt: str, image: str) -> str:
         self.load()
@@ -525,6 +383,13 @@ class Qwen25VLModel(EvalModel):
         
         # Format the prompt using the template
         # formatted_prompt = self.template.format(prompt=prompt)
+        
+        if "gemma" in self.model_path.lower():
+            print("resizing image for gemma")
+            print(dict(old=pil_image.size, resized=self.resize_image(pil_image).size))
+            pil_image = self.resize_image(pil_image)
+            self.processor.tokenizer.eos_token = "<end_of_turn>"
+            self.processor.tokenizer.bos_token = "[BOS]"
         
         # Create messages in the format expected by the processor
         messages = [
@@ -563,16 +428,78 @@ class Qwen25VLModel(EvalModel):
         return outputs[0].outputs[0].text
 
 
+# class BedrockModel(EvalModel):
+#     model_path: str = "bedrock_info.json"
+#     engine: str = ""
+#     client: Optional[botocore.client.BaseClient]
+
+#     def load(self):
+#         with open(self.model_path) as f:
+#             info = json.load(f)
+#             self.engine = info["engine"]
+#             self.client = boto3.client('bedrock-runtime')
+
+#     def make_messages(self, prompt: str, image: Image = None) -> List[dict]:
+#         image_media_type = "png"
+#         image_data = convert_image_to_bytes(self.resize_image(image))
+
+#         inputs = [
+#             {
+#                 "image": {
+#                     "format": image_media_type,
+#                     "source": {
+#                         "bytes": image_data
+#                     }
+#                 },
+#             },
+#             {
+#                 "text": prompt
+#             },
+#         ]
+
+#         return [{"role": "user", "content": inputs}]
+
+#     def run(self, prompt: str, image: Image = None) -> str:
+#         self.load()
+#         output = ""
+#         error_message = "The response was filtered"
+
+#         while not output:
+#             try:
+#                 response = self.client.converse(
+#                     modelId=self.engine,
+#                     messages=self.make_messages(prompt, image),
+#                     inferenceConfig={
+#                         "temperature": self.temperature,
+#                         "maxTokens": 512
+#                     }
+#                 )
+#                 output = response['output']['message']['content'][0]['text']
+#             except Exception as e:
+#                 print(e)
+#                 if error_message in str(e):
+#                     output = error_message
+
+#             if not output:
+#                 print("BedrockModel request failed, retrying...")
+
+#         return output
+
+
 def select_model(model_name: str, **kwargs) -> EvalModel:
     model_map = dict(
         # gemini_vision=GeminiVisionModel,
         # openai_vision=OpenAIVisionModel,
         # llava=LlavaModel,
         # claude=ClaudeModel,
-        # bedrock=BedrockModel,
-        # gpt4v=GPT4vModel,
-        # gpt4o=GPT4oModel,
         qwen=Qwen25VLModel,
+        # gpt4v=GPT4VModel,
+        # gpt4o=GPT4oModel,
+        # claude_3_opus=ClaudeOpusModel,
+        # claude_35_sonnet=ClaudeSonnetNewModel,
+        # gemini_1_pro=GeminiProVisionModel,
+        # gemini_15_pro=GeminiProVisionNewModel,
+        # bedrock=BedrockModel,
     )
     model_class = model_map.get(model_name)
     if model_class is None:
@@ -592,10 +519,12 @@ def test_model(
 
 
 """
-p modeling.py test_model --model_name gemini_vision
-p modeling.py test_model --model_name openai_vision
-p modeling.py test_model --model_name llava
-p modeling.py test_model --model_name claude 
+bash evaluate.sh gpt4v
+bash evaluate.sh claude_3_opus
+bash evaluate.sh gemini_1_pro
+bash evaluate.sh gpt4o
+bash evaluate.sh claude_35_sonnet
+bash evaluate.sh gemini_15_pro
 """
 
 

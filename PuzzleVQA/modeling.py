@@ -39,11 +39,12 @@ class EvalModel(BaseModel, arbitrary_types_allowed=True):
         factor = self.max_image_size / max(h, w)
         h = round(h * factor)
         w = round(w * factor)
-        print(dict(old=image.size, resized=(h, w)))
+        # print("resizing image")
+        # print(dict(old=image.size, resized=(h, w)))
         if image.mode == "RGBA":
-            image = image.convert("RGB")
-        image = image.resize((h, w), Image.LANCZOS)
-        return image
+            resized_image = image.convert("RGB")
+        resized_image = image.resize((h, w), Image.LANCZOS)
+        return resized_image
 
     def run(self, prompt: str, image: Image = None) -> str:
         raise NotImplementedError
@@ -326,8 +327,9 @@ class EvalModel(BaseModel, arbitrary_types_allowed=True):
 #             self.client = anthropic.Anthropic(api_key=key, timeout=self.timeout)
 
 
-class QwenModel(EvalModel):
-    model_path: str = "Qwen/Qwen2.5-VL-7B-Instruct"
+class Qwen25VLModel(EvalModel):
+    # model_path: str = "Qwen/Qwen2.5-VL-7B-Instruct"
+    model_path: str = "google/gemma-3-27b-it"
     # template = "USER: <image>\n{prompt}\nASSISTANT:"
     device: str = "cuda"
     dtype: torch.dtype = torch.float16
@@ -337,23 +339,30 @@ class QwenModel(EvalModel):
     def load(self):
         if self.model is None:
             # Initialize VLLM model with appropriate configuration for 7B model
-            self.model = LLM(
-                model=self.model_path,
-                max_num_seqs=128,
-                limit_mm_per_prompt={"image": 24},
-                gpu_memory_utilization=0.80,
-                mm_processor_kwargs={
-                    "min_pixels": 256 * 28 * 28,
-                    "max_pixels": 1280 * 28 * 28,
-                },
-            )
-            
-            # Initialize processor for chat template formatting
-            self.processor = AutoProcessor.from_pretrained(
-                self.model_path, 
-                min_pixels=256 * 28 * 28, 
-                max_pixels=1280 * 28 * 28
-            )
+            if "qwen" in self.model_path.lower():
+                self.model = LLM(
+                    model=self.model_path,
+                    max_num_seqs=128,
+                    limit_mm_per_prompt={"image": 24},
+                    gpu_memory_utilization=0.80,
+                    mm_processor_kwargs={
+                        "min_pixels": 256 * 28 * 28,
+                        "max_pixels": 1280 * 28 * 28,
+                    },
+                )
+                # Initialize processor for chat template formatting
+                self.processor = AutoProcessor.from_pretrained(
+                    self.model_path, min_pixels=256 * 28 * 28, max_pixels=1280 * 28 * 28
+                )
+            elif "gemma-3-12b-it" in self.model_path.lower():
+                self.model = LLM(
+                    model=self.model_path,
+                    max_num_seqs=64,
+                    gpu_memory_utilization=0.75,
+                    limit_mm_per_prompt={"image": 24},
+                )
+                # Initialize processor for chat template formatting
+                self.processor = AutoProcessor.from_pretrained(self.model_path)
 
     def run(self, prompt: str, image: str) -> str:
         self.load()
@@ -374,6 +383,13 @@ class QwenModel(EvalModel):
         
         # Format the prompt using the template
         # formatted_prompt = self.template.format(prompt=prompt)
+        
+        if "gemma" in self.model_path.lower():
+            print("resizing image for gemma")
+            print(dict(old=pil_image.size, resized=self.resize_image(pil_image).size))
+            pil_image = self.resize_image(pil_image)
+            self.processor.tokenizer.eos_token = "<end_of_turn>"
+            self.processor.tokenizer.bos_token = "[BOS]"
         
         # Create messages in the format expected by the processor
         messages = [
@@ -396,29 +412,20 @@ class QwenModel(EvalModel):
         # Set up sampling parameters for Qwen
         sampling_params = SamplingParams(
             temperature=0.01,
-            repetition_penalty=1.05,
-            max_tokens=8192,
-            top_p=0.8,
-            top_k=20,
+            max_tokens=512,
         )
         
         # Generate response using VLLM
         outputs = self.model.generate(
-            {
+            [{
                 "prompt": text_prompt,
-                "multi_modal_data": {"image": [pil_image]}
-            },
-            sampling_params
+                "multi_modal_data": {"image": pil_image}
+            }],
+            sampling_params=sampling_params
         )
         
         # Extract the generated text
-        if outputs and len(outputs) > 0 and len(outputs[0].outputs) > 0:
-            response = outputs[0].outputs[0].text.strip()
-        else:
-            response = ""
-
-        print(f"response returned from Qwen model: {response}")
-        return response
+        return outputs[0].outputs[0].text
 
 
 # class BedrockModel(EvalModel):
@@ -485,7 +492,7 @@ def select_model(model_name: str, **kwargs) -> EvalModel:
         # openai_vision=OpenAIVisionModel,
         # llava=LlavaModel,
         # claude=ClaudeModel,
-        qwen=QwenModel,
+        qwen=Qwen25VLModel,
         # gpt4v=GPT4VModel,
         # gpt4o=GPT4oModel,
         # claude_3_opus=ClaudeOpusModel,
