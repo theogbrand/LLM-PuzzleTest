@@ -363,6 +363,15 @@ class Qwen25VLModel(EvalModel):
                 )
                 # Initialize processor for chat template formatting
                 self.processor = AutoProcessor.from_pretrained(self.model_path)
+            elif "gemma-3-27b-it" in self.model_path.lower():
+                self.model = LLM(
+                    model=self.model_path,
+                    max_num_seqs=32,
+                    gpu_memory_utilization=0.88,
+                    limit_mm_per_prompt={"image": 24},
+                )
+                # Initialize processor for chat template formatting
+                self.processor = AutoProcessor.from_pretrained(self.model_path)
 
     def run(self, prompt: str, image: str) -> str:
         self.load()
