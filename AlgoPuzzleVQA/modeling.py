@@ -329,7 +329,7 @@ class EvalModel(BaseModel, arbitrary_types_allowed=True):
 
 class Qwen25VLModel(EvalModel):
     # model_path: str = "Qwen/Qwen2.5-VL-7B-Instruct"
-    model_path: str = "google/gemma-3-12b-it"
+    model_path: str = "google/gemma-3-27b-it"
     # template = "USER: <image>\n{prompt}\nASSISTANT:"
     device: str = "cuda"
     dtype: torch.dtype = torch.float16
@@ -359,6 +359,15 @@ class Qwen25VLModel(EvalModel):
                     model=self.model_path,
                     max_num_seqs=64,
                     gpu_memory_utilization=0.75,
+                    limit_mm_per_prompt={"image": 24},
+                )
+                # Initialize processor for chat template formatting
+                self.processor = AutoProcessor.from_pretrained(self.model_path)
+            elif "gemma-3-27b-it" in self.model_path.lower():
+                self.model = LLM(
+                    model=self.model_path,
+                    max_num_seqs=32,
+                    gpu_memory_utilization=0.88,
                     limit_mm_per_prompt={"image": 24},
                 )
                 # Initialize processor for chat template formatting
