@@ -329,7 +329,7 @@ class EvalModel(BaseModel, arbitrary_types_allowed=True):
 
 class Qwen25VLModel(EvalModel):
     # model_path: str = "Qwen/Qwen2.5-VL-7B-Instruct"
-    model_path: str = "google/gemma-3-27b-it"
+    model_path: str = "google/gemma-3-12b-it"
     # template = "USER: <image>\n{prompt}\nASSISTANT:"
     device: str = "cuda"
     dtype: torch.dtype = torch.float16
