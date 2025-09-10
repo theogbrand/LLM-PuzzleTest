@@ -19,6 +19,7 @@ from transformers import (
     LlavaProcessor,
     AutoModelForCausalLM,
     AutoTokenizer,
+    Gemma3Processor,
 )
 from vllm import LLM, SamplingParams
 import base64
@@ -328,8 +329,8 @@ class EvalModel(BaseModel, arbitrary_types_allowed=True):
 
 
 class Qwen25VLModel(EvalModel):
-    # model_path: str = "Qwen/Qwen2.5-VL-7B-Instruct"
-    model_path: str = "google/gemma-3-12b-it"
+    model_path: str = "Qwen/Qwen2.5-VL-32B-Instruct"
+    # model_path: str = "google/gemma-3-12b-it"
     # template = "USER: <image>\n{prompt}\nASSISTANT:"
     device: str = "cuda"
     dtype: torch.dtype = torch.float16
@@ -339,12 +340,27 @@ class Qwen25VLModel(EvalModel):
     def load(self):
         if self.model is None:
             # Initialize VLLM model with appropriate configuration for 7B model
-            if "qwen" in self.model_path.lower():
+            if "7b" in self.model_path.lower():
+                self.model = LLM(
+                model=self.model_path,
+                max_num_seqs=128,
+                limit_mm_per_prompt={"image": 24},
+                gpu_memory_utilization=0.80,
+                mm_processor_kwargs={
+                    "min_pixels": 256 * 28 * 28,
+                    "max_pixels": 1280 * 28 * 28,
+                },
+            )
+            # Initialize processor for chat template formatting
+                self.processor = AutoProcessor.from_pretrained(
+                    self.model_path, min_pixels=256 * 28 * 28, max_pixels=1280 * 28 * 28
+                )
+            elif "32b" in self.model_path.lower():
                 self.model = LLM(
                     model=self.model_path,
-                    max_num_seqs=128,
+                    max_num_seqs=32,
                     limit_mm_per_prompt={"image": 24},
-                    gpu_memory_utilization=0.80,
+                    gpu_memory_utilization=0.90,
                     mm_processor_kwargs={
                         "min_pixels": 256 * 28 * 28,
                         "max_pixels": 1280 * 28 * 28,
@@ -360,18 +376,24 @@ class Qwen25VLModel(EvalModel):
                     max_num_seqs=64,
                     gpu_memory_utilization=0.75,
                     limit_mm_per_prompt={"image": 24},
+                    mm_processor_kwargs={
+                        "do_pan_and_scan": True,
+                    },
                 )
                 # Initialize processor for chat template formatting
-                self.processor = AutoProcessor.from_pretrained(self.model_path)
+                self.processor = Gemma3Processor.from_pretrained(self.model_path, do_pan_and_scan=True)
             elif "gemma-3-27b-it" in self.model_path.lower():
                 self.model = LLM(
                     model=self.model_path,
                     max_num_seqs=32,
                     gpu_memory_utilization=0.88,
                     limit_mm_per_prompt={"image": 24},
+                    mm_processor_kwargs={
+                        "do_pan_and_scan": True,
+                    },
                 )
                 # Initialize processor for chat template formatting
-                self.processor = AutoProcessor.from_pretrained(self.model_path)
+                self.processor = Gemma3Processor.from_pretrained(self.model_path, do_pan_and_scan=True)
 
     def run(self, prompt: str, image: str) -> str:
         self.load()
