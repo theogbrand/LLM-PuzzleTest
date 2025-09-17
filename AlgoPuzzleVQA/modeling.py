@@ -1,5 +1,7 @@
 import json
 import os
+import random
+import math
 import time
 import torch
 # import anthropic
@@ -329,7 +331,8 @@ class EvalModel(BaseModel, arbitrary_types_allowed=True):
 
 
 class Qwen25VLModel(EvalModel):
-    model_path: str = "Qwen/Qwen2.5-VL-32B-Instruct"
+    # model_path: str = "Qwen/Qwen2.5-VL-32B-Instruct"
+    model_path: str = "openbmb/MiniCPM-V-2_6"
     # model_path: str = "google/gemma-3-12b-it"
     # template = "USER: <image>\n{prompt}\nASSISTANT:"
     device: str = "cuda"
@@ -394,6 +397,16 @@ class Qwen25VLModel(EvalModel):
                 )
                 # Initialize processor for chat template formatting
                 self.processor = Gemma3Processor.from_pretrained(self.model_path, do_pan_and_scan=True)
+            elif "minicpm" in self.model_path.lower():
+                self.model = LLM(
+                model=self.model_path,
+                max_num_seqs=128,
+                limit_mm_per_prompt={"image": 24},
+                gpu_memory_utilization=0.80,
+                trust_remote_code=True,
+            )
+                self.processor = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
+                torch.cuda.empty_cache()
 
     def run(self, prompt: str, image: str) -> str:
         self.load()
@@ -421,7 +434,6 @@ class Qwen25VLModel(EvalModel):
             pil_image = self.resize_image(pil_image)
             self.processor.tokenizer.eos_token = "<end_of_turn>"
             self.processor.tokenizer.bos_token = "[BOS]"
-        
         # Create messages in the format expected by the processor
         messages = [
             {
@@ -433,13 +445,30 @@ class Qwen25VLModel(EvalModel):
             }
         ]
         
+        if "minicpm" in self.model_path.lower():
+            messages = [
+                {
+                    "role": "user",
+                    "content": f"(<image>./</image>)\n{prompt}"
+                }
+            ]
+            img_width, img_height = pil_image.width, pil_image.height # resizing https://github.com/OpenBMB/MiniCPM-V/blob/main/eval_mm/vlmevalkit/vlmeval/vlm/minicpm_v.py#L260
+            if (img_width * img_height) >= (1344 * 1344):
+                print(f"Image is too large, skipping resize: {img_width}x{img_height}")
+            else:
+                ratio = math.sqrt((1344 * 1344) / (img_width * img_height))
+                max_img_width = int(img_width * ratio)
+                new_img_width = random.randint(img_width, max_img_width)
+                new_img_height = int(new_img_width / img_width * img_height)
+                print(f"Resizing image from {img_width}x{img_height} to {new_img_width}x{new_img_height}")
+                pil_image = pil_image.resize((new_img_width, new_img_height))
         # Apply chat template
         text_prompt = self.processor.apply_chat_template(
             messages,
             tokenize=False,
             add_generation_prompt=True
         )
-        print(f"text_prompt sent for decoding: {text_prompt}")
+        print(f"Policy prompt sent for decoding: {text_prompt}")
         # Set up sampling parameters for Qwen
         sampling_params = SamplingParams(
             temperature=0.01,
