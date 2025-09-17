@@ -39,6 +39,7 @@ DATASETS=(
   "venn"
 )
 
+source /scratch_aisg/SPEC-SF-AISG/ob1/mmr-eval/qwen-evaluation/.venv/bin/activate
 # Loop through each dataset and run the evaluation
 for DATA in "${DATASETS[@]}"; do
   echo "Evaluating dataset: $DATA with model: $MODEL_NAME"
